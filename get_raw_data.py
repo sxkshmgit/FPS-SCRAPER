@@ -1,159 +1,144 @@
-# Adding Imports
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
+from scraper.navigator import Navigator
+from scraper.parser import Parser
+
+import json
+import time
+import traceback
+from pathlib import Path
 
 
-class Navigator:
+# Initialize the browser navigator and page parser.
+navigator = Navigator()
+parser = Parser(navigator.driver)
 
-    # Initialize the Selenium WebDriver and explicit wait used by the scraper.
-    def __init__(self):
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service)
-        self.wait = WebDriverWait(self.driver, 20)
 
-    # Open the IMPDS portal.
-    def open_site(self):
-        self.driver.get("https://impds.nic.in/sale/")
+# Select the reporting period, state, and district to scrape.
+YEAR = "2026"
+MONTH = "03"
+STATE = "GOA"
+DISTRICT = "north_goa"
 
-    # Open the calendar to select the reporting month.
-    def open_calendar(self):
-        calendar_link = self.wait.until(
-            EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, 'a[data-bs-target="#myModal10"]')
-            )
+
+# Create the raw-data directory for the selected month and district.
+output_dir = Path(
+    f"data/raw/{YEAR}-{MONTH}/{DISTRICT}"
+)
+
+output_dir.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+
+# Navigate to the selected month, state, and district.
+navigator.open_site()
+
+navigator.open_calendar()
+navigator.select_month("mar")
+
+navigator.open_states()
+navigator.select_state("30")
+
+navigator.open_districts()
+navigator.select_district(DISTRICT)
+
+navigator.open_fps_list()
+
+
+# Collect all FPS IDs available for the selected district.
+fps_ids = navigator.get_all_fps_ids()
+
+print(
+    f"Found {len(fps_ids)} FPS in "
+    f"{DISTRICT.replace('_', ' ').title()}"
+)
+
+
+# Process each FPS independently so completed records can be
+# retained even if another FPS fails during the run.
+for index, fps_id in enumerate(fps_ids, start=1):
+
+    output_file = output_dir / f"{fps_id}.json"
+
+    print(
+        f"\n[{index}/{len(fps_ids)}] "
+        f"Processing FPS: {fps_id}"
+    )
+
+    # Skip FPS records that were already successfully saved.
+    if output_file.exists():
+
+        print("Already scraped — skipping.")
+
+        continue
+
+    try:
+
+        # Open the selected FPS and wait for its AJAX-loaded data.
+        navigator.click_fps(fps_id)
+
+        time.sleep(3)
+
+        # Extract the summary cards and three available tables.
+        summary = parser.extract_summary_cards()
+
+        transactions = parser.extract_table(
+            "Number of Transaction"
         )
 
-        calendar_link.click()
-
-    # Select the required reporting month.
-    def select_month(self, month):
-        month_link = self.wait.until(
-            EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, f'a[key="{month}"]')
-            )
+        ration_cards = parser.extract_table(
+            "Number of Transacted Ration Card"
         )
 
-        month_link.click()
-
-    # Open the state selection panel.
-    def open_states(self):
-        states_link = self.wait.until(
-            EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, 'a[data-bs-target="#myModal11"]')
-            )
+        distribution = parser.extract_table(
+            "Distributed Quantity(In Kg)"
         )
 
-        states_link.click()
-
-    # Select a state using its website-specific state ID.
-    def select_state(self, state):
-        state_select = self.wait.until(
-            EC.element_to_be_clickable(
-                (
-                    By.CSS_SELECTOR,
-                    f'a[onclick="stateData(\'{state}\')"]'
-                )
-            )
-        )
-
-        state_select.click()
-
-    # Open the district selection panel for the selected state.
-    def open_districts(self):
-        district_link = self.wait.until(
-            EC.element_to_be_clickable(
-                (
-                    By.CSS_SELECTOR,
-                    'a[onclick="liveDistrictdata(\'30\')"]'
-                )
-            )
-        )
-
-        district_link.click()
-
-    # Select a district using its website-specific district ID.
-    def select_district(self, district):
-        district_ids = {
-            "north_goa": "585",
-            "south_goa": "586"
+        # Store all information associated with the FPS.
+        fps_data = {
+            "year": YEAR,
+            "month": MONTH,
+            "state": STATE,
+            "district": DISTRICT,
+            "fps_id": fps_id,
+            "summary": summary,
+            "transactions": transactions,
+            "ration_cards": ration_cards,
+            "distribution": distribution
         }
 
-        district_id = district_ids[district]
+        # Save the FPS immediately instead of waiting until the
+        # entire district has been scraped.
+        with open(
+            output_file,
+            "w",
+            encoding="utf-8"
+        ) as file:
 
-        district_link = self.wait.until(
-            EC.element_to_be_clickable(
-                (
-                    By.CSS_SELECTOR,
-                    f'a[onclick="stateData(\'{district_id}\')"]'
-                )
+            json.dump(
+                fps_data,
+                file,
+                indent=4,
+                ensure_ascii=False
             )
-        )
 
-        district_link.click()
+        print("✓ Saved successfully")
 
-    # Open the FPS list for the selected district.
-    def open_fps_list(self):
-        fps_list_link = self.wait.until(
-            EC.element_to_be_clickable(
-                (
-                    By.CSS_SELECTOR,
-                    'a[onclick="liveFpsdata(\'30\',\'585\')"]'
-                )
-            )
-        )
+    except Exception:
 
-        fps_list_link.click()
+        # Log the failed FPS and continue with the remaining records.
+        print(f"\n✗ Failed FPS: {fps_id}")
 
-    # Extract all FPS IDs currently displayed in the FPS list.
-    def get_all_fps_ids(self):
-        fps_links = self.wait.until(
-            EC.presence_of_all_elements_located(
-                (By.CSS_SELECTOR, "li.menu_list a")
-            )
-        )
+        traceback.print_exc()
 
-        fps_ids = []
+        continue
 
-        for fps in fps_links:
-            onclick = fps.get_attribute("onclick")
 
-            if onclick:
-                fps_id = onclick.split("'")[1]
-                fps_ids.append(fps_id)
+print(
+    f"\nScraping completed for "
+    f"{DISTRICT.replace('_', ' ').title()}."
+)
 
-        return fps_ids
+input("Press Enter to close the browser...")
 
-    # Open an individual FPS and wait for its AJAX-loaded data panel.
-    def click_fps(self, fps_id):
-        selector = f'a[onclick*="{fps_id}"]'
-
-        fps = self.wait.until(
-            EC.element_to_be_clickable(
-                (
-                    By.CSS_SELECTOR,
-                    selector
-                )
-            )
-        )
-
-        self.driver.execute_script(
-            "arguments[0].click();",
-            fps
-        )
-
-        self.wait.until(
-            EC.visibility_of_element_located(
-                (
-                    By.CSS_SELECTOR,
-                    'table[aria-label="Number of Transaction"] tbody tr'
-                )
-            )
-        )
-
-    # Close the browser and terminate the Selenium session.
-    def close(self):
-        self.driver.quit()
+navigator.close()
