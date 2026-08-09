@@ -1,108 +1,149 @@
-#Adding Imports
-from scraper.navigator import Navigator
-from scraper.parser import Parser
+"""Browser navigation helpers for the IMPDS FPS sale portal."""
 
-import json
-import time
-import traceback
-
-
-# Initialize the browser navigation and page parsing components.
-navigator = Navigator()
-parser = Parser(navigator.driver)
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
 
 
-# Navigate to the PDS portal and select the required month, state,
-# and district before loading the FPS list.
-navigator.open_site()
+class Navigator:
+    """Handle Selenium navigation through the IMPDS portal hierarchy."""
 
-navigator.open_calendar()
-navigator.select_month("mar")
+    # Initialize Chrome and the explicit wait used throughout navigation.
+    def __init__(self):
+        service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(service=service)
+        self.wait = WebDriverWait(self.driver, 20)
 
-navigator.open_states()
-navigator.select_state("30")
+    # Open the IMPDS sale portal.
+    def open_site(self):
+        self.driver.get("https://impds.nic.in/sale/")
 
-navigator.open_districts()
-navigator.select_district("north_goa")
-
-navigator.open_fps_list()
-
-
-# Collect all FPS IDs available for the selected district and month.
-fps_ids = navigator.get_all_fps_ids()
-
-print(f"Found {len(fps_ids)} FPS")
-
-
-# Store the scraped records before exporting them to JSON.
-all_fps_data = []
-
-
-# Process each FPS independently so that a failed FPS does not
-# terminate the entire scraping run.
-for index, fps_id in enumerate(fps_ids, start=1):
-
-    print(f"\n[{index}/{len(fps_ids)}] Processing FPS: {fps_id}")
-
-    try:
-
-        # Open the selected FPS and wait for its dynamic data to load.
-        navigator.click_fps(fps_id)
-
-        # Allow the AJAX-driven panel to finish updating before parsing.
-        time.sleep(3)
-
-        # Extract the four summary card values.
-        summary = parser.extract_summary_cards()
-
-        # Extract the three transaction-related tables.
-        transactions = parser.extract_table(
-            "Number of Transaction"
+    # Open the month-selection calendar on the portal.
+    def open_calendar(self):
+        calendar_link = self.wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, 'a[data-bs-target="#myModal10"]')
+            )
         )
+        calendar_link.click()
 
-        ration_cards = parser.extract_table(
-            "Number of Transacted Ration Card"
+    # Select a reporting month from the calendar.
+    def select_month(self, month):
+        month_link = self.wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, f'a[key="{month}"]')
+            )
         )
+        month_link.click()
 
-        distribution = parser.extract_table(
-            "Distributed Quantity(In Kg)"
+    # Open the state-selection panel.
+    def open_states(self):
+        states_link = self.wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, 'a[data-bs-target="#myModal11"]')
+            )
         )
+        states_link.click()
 
-        # Combine all extracted information into a single FPS record.
-        fps_data = {
-            "fps_id": fps_id,
-            "summary": summary,
-            "transactions": transactions,
-            "ration_cards": ration_cards,
-            "distribution": distribution
+    # Select a state using its portal state identifier.
+    def select_state(self, state):
+        state_link = self.wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, f'a[onclick="stateData(\'{state}\')"]')
+            )
+        )
+        state_link.click()
+
+    # Open the district-selection panel for Goa.
+    def open_districts(self):
+        district_link = self.wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, 'a[onclick="liveDistrictdata(\'30\')"]')
+            )
+        )
+        district_link.click()
+
+    # Select North Goa or South Goa using the portal district ID.
+    def select_district(self, district):
+        district_ids = {
+            "north_goa": "585",
+            "south_goa": "586",
         }
 
-        all_fps_data.append(fps_data)
+        district_id = district_ids[district]
+        district_link = self.wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, f'a[onclick="stateData(\'{district_id}\')"]')
+            )
+        )
+        district_link.click()
 
-        print("✓ Scraped successfully")
+    # Open the FPS list for the selected Goa district.
+    def open_fps_list(self):
+        fps_list_link = self.wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, 'a[onclick="liveFpsdata(\'30\',\'585\')"]')
+            )
+        )
+        fps_list_link.click()
 
-    except Exception:
+    # Read all FPS IDs currently available in the FPS navigation list.
+    def get_all_fps_ids(self):
+        fps_links = self.wait.until(
+            EC.presence_of_all_elements_located(
+                (By.CSS_SELECTOR, "li.menu_list a")
+            )
+        )
 
-        # Log the error and continue with the remaining FPS records.
-        print(f"\n✗ Failed FPS: {fps_id}")
-        traceback.print_exc()
+        fps_ids = []
 
-        continue
+        for fps in fps_links:
+            onclick = fps.get_attribute("onclick")
+            if onclick:
+                fps_ids.append(onclick.split("'")[1])
 
+        return fps_ids
 
-# Export all successfully scraped FPS records as structured JSON.
-with open("output.json", "w", encoding="utf-8") as file:
-    json.dump(
-        all_fps_data,
-        file,
-        indent=4,
-        ensure_ascii=False
-    )
+    # Select an FPS and wait until its dynamically updated transaction table appears.
+    def click_fps(self, fps_id):
+        selector = f'a[onclick*="{fps_id}"]'
+        fps = self.wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+        )
 
-print(f"\nSaved {len(all_fps_data)} FPS records to output.json")
+        self.driver.execute_script("arguments[0].click();", fps)
 
+        self.wait.until(
+            EC.visibility_of_element_located(
+                (
+                    By.CSS_SELECTOR,
+                    'table[aria-label="Number of Transaction"] tbody tr',
+                )
+            )
+        )
 
-# Keep the browser open until the user confirms that the run is complete.
-input("Press Enter to close the browser...")
+    # Expand the Coarse Grains section so its individual commodities are visible.
+    def expand_coarse_grains(self):
+        button = self.wait.until(
+            EC.element_to_be_clickable(
+                (
+                    By.CSS_SELECTOR,
+                    'button.menu-toggle[aria-controls="coarseGrainsPanel"]',
+                )
+            )
+        )
 
-navigator.close()
+        self.driver.execute_script("arguments[0].click();", button)
+
+        self.wait.until(
+            lambda driver: len(
+                driver.find_elements(By.CSS_SELECTOR, "tr.customRow")
+            ) >= 6
+        )
+
+    # Close the browser and end the Selenium session.
+    def close(self):
+        self.driver.quit()
